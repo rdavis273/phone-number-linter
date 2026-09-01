@@ -1,0 +1,14 @@
+[package]
+name = "phonelint"
+version = "0.1.0"
+edition = "2021"
+description = "A linter that flags malformed phone numbers in text files."
+license = "MIT"
+
+[[bin]]
+name = "phonelint"
+path = "src/main.rs"
+
+[lib]
+name = "phonelint"
+path = "src/lib.rs"
