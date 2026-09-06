@@ -149,12 +149,49 @@ pub fn check_balanced_parens(candidate: &str) -> Option<String> {
     }
 }
 
+/// Flag a 10-digit North American number whose separators don't fall on
+/// the standard 3-3-4 boundaries (area code, exchange, subscriber), e.g.
+/// "55-512-34567" instead of "555-123-4567". A leading "1" country code
+/// group is set aside first, since "+1-555-123-4567" is still 3-3-4
+/// underneath. A single unbroken run of 10 digits isn't claiming any
+/// grouping at all, so it's left alone.
+pub fn check_nanp_grouping(candidate: &str) -> Option<String> {
+    let mut groups: Vec<&str> = candidate
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if groups.len() < 2 {
+        return None;
+    }
+
+    if groups.len() == 4 && groups[0] == "1" {
+        groups.remove(0);
+    }
+
+    let lengths: Vec<usize> = groups.iter().map(|g| g.len()).collect();
+    let total_digits: usize = lengths.iter().sum();
+    if total_digits != 10 {
+        return None;
+    }
+
+    if lengths != [3, 3, 4] {
+        Some(format!(
+            "\"{}\" groups digits as {:?}, not the NANP 3-3-4 pattern",
+            candidate, lengths
+        ))
+    } else {
+        None
+    }
+}
+
 type Check = fn(&str) -> Option<String>;
 
-const CHECKS: [(Check, Severity); 3] = [
+const CHECKS: [(Check, Severity); 4] = [
     (check_mixed_separators, Severity::Warning),
     (check_digit_count, Severity::Error),
     (check_balanced_parens, Severity::Error),
+    (check_nanp_grouping, Severity::Warning),
 ];
 
 /// Run every rule against one candidate, tagging results with the line
@@ -236,6 +273,30 @@ mod tests {
     fn flags_unbalanced_parens() {
         assert!(check_balanced_parens("(555 123-4567").is_some());
         assert!(check_balanced_parens("(555) 123-4567").is_none());
+    }
+
+    #[test]
+    fn flags_bad_nanp_grouping() {
+        assert!(check_nanp_grouping("55-512-34567").is_some());
+        assert!(check_nanp_grouping("555-123-4567").is_none());
+    }
+
+    #[test]
+    fn nanp_grouping_allows_leading_country_code() {
+        assert!(check_nanp_grouping("+1-555-123-4567").is_none());
+        assert!(check_nanp_grouping("1-555-123-4567").is_none());
+    }
+
+    #[test]
+    fn nanp_grouping_ignores_unformatted_runs() {
+        // A single unbroken run of digits isn't claiming any grouping.
+        assert!(check_nanp_grouping("5551234567").is_none());
+    }
+
+    #[test]
+    fn nanp_grouping_ignores_non_nanp_lengths() {
+        // 12 digits isn't a NANP number at all, grouped or not.
+        assert!(check_nanp_grouping("55-512-345-6789").is_none());
     }
 
     #[test]
