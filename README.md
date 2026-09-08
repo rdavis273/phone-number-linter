@@ -37,6 +37,14 @@ Fax: 555.123.4567
 Backup line: 555-123.4567
 ```
 
+Reads from stdin if you pass no files, or pass `-` in place of a
+filename, so it fits into a pipeline:
+
+```
+$ git show HEAD:contacts.txt | cargo run --
+<stdin>:2:6: error: unbalanced parentheses in phone number "(555 123-4567"
+```
+
 Exit code is `0` when nothing errors, `1` when at least one error-level
 finding is reported, and `2` if a file couldn't be read at all.
 
