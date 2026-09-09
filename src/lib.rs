@@ -227,6 +227,39 @@ pub fn lint_text(text: &str) -> Vec<Finding> {
         .collect()
 }
 
+/// Escape a string for embedding in a JSON string literal.
+fn escape_json(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+impl Finding {
+    /// Render as a single-line JSON object. `file` is the source label
+    /// (a path, or "<stdin>") rather than a field on `Finding` itself,
+    /// since callers already loop file-by-file and know their own label.
+    pub fn to_json(&self, file: &str) -> String {
+        format!(
+            "{{\"file\":\"{}\",\"line\":{},\"column\":{},\"severity\":\"{}\",\"message\":\"{}\"}}",
+            escape_json(file),
+            self.line,
+            self.column,
+            self.severity.as_str(),
+            escape_json(&self.message)
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,6 +330,21 @@ mod tests {
     fn nanp_grouping_ignores_non_nanp_lengths() {
         // 12 digits isn't a NANP number at all, grouped or not.
         assert!(check_nanp_grouping("55-512-345-6789").is_none());
+    }
+
+    #[test]
+    fn finding_to_json_escapes_quotes_and_backslashes() {
+        let finding = Finding {
+            line: 3,
+            column: 5,
+            severity: Severity::Warning,
+            message: "mixed separators in \"555-1.234\"".to_string(),
+        };
+        let json = finding.to_json("contacts.txt");
+        assert_eq!(
+            json,
+            "{\"file\":\"contacts.txt\",\"line\":3,\"column\":5,\"severity\":\"warning\",\"message\":\"mixed separators in \\\"555-1.234\\\"\"}"
+        );
     }
 
     #[test]

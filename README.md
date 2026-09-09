@@ -45,8 +45,18 @@ $ git show HEAD:contacts.txt | cargo run --
 <stdin>:2:6: error: unbalanced parentheses in phone number "(555 123-4567"
 ```
 
+Pass `--format json` for machine-readable output — a single JSON array
+of finding objects across all files given, in the order they were
+found:
+
+```
+$ cargo run -- --format json contacts.txt
+[{"file":"contacts.txt","line":2,"column":6,"severity":"error","message":"unbalanced parentheses in phone number \"(555 123-4567\""}]
+```
+
 Exit code is `0` when nothing errors, `1` when at least one error-level
-finding is reported, and `2` if a file couldn't be read at all.
+finding is reported, and `2` if a file couldn't be read at all, or the
+command line couldn't be parsed.
 
 ## Building
 
@@ -60,8 +70,8 @@ cargo build --release
 
 All of the linting logic lives in `src/lib.rs` as pure functions —
 `extract_candidates`, `check_mixed_separators`, `check_digit_count`,
-`check_balanced_parens`, `check_nanp_grouping`, `lint_line`, `lint_text`.
-None of them touch a
+`check_balanced_parens`, `check_nanp_grouping`, `lint_line`, `lint_text`,
+`Finding::to_json`. None of them touch a
 file or the environment; they take a string, return data. `src/main.rs`
 is the only part that does I/O (reading files, printing to stdout). That
 split is deliberate: every rule can be tested with a plain string in, a
