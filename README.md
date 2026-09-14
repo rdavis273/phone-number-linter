@@ -12,8 +12,10 @@ convention imaginable: `555-123-4567`, `(555) 123.4567`, `+1 555 123
 notices until a support script or a regex somewhere chokes on the one
 that's formatted differently. This tool catches the obvious problems
 (mixed separators, unbalanced parentheses, digit counts that can't be a
-real number, 10-digit numbers grouped on the wrong boundaries) before
-they cause that kind of bug.
+real number, 10-digit numbers grouped on the wrong boundaries, and
+placeholder numbers in the reserved 555-0100 through 555-0199 range that
+were meant to be swapped out before publishing) before they cause that
+kind of bug.
 
 It is not a number *validator* in the libphonenumber sense — it doesn't
 know that `+1 555 0100` isn't a real assigned NANP number. It checks
@@ -70,8 +72,8 @@ cargo build --release
 
 All of the linting logic lives in `src/lib.rs` as pure functions —
 `extract_candidates`, `check_mixed_separators`, `check_digit_count`,
-`check_balanced_parens`, `check_nanp_grouping`, `lint_line`, `lint_text`,
-`Finding::to_json`. None of them touch a
+`check_balanced_parens`, `check_nanp_grouping`, `check_placeholder_number`,
+`lint_line`, `lint_text`, `Finding::to_json`. None of them touch a
 file or the environment; they take a string, return data. `src/main.rs`
 is the only part that does I/O (reading files, printing to stdout). That
 split is deliberate: every rule can be tested with a plain string in, a

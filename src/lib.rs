@@ -185,13 +185,45 @@ pub fn check_nanp_grouping(candidate: &str) -> Option<String> {
     }
 }
 
+/// Flag NANP numbers that fall in the reserved fictional range
+/// 555-0100 through 555-0199, e.g. "555-555-0199" or "(212) 555-0142".
+/// These are set aside by the numbering plan specifically so they can't
+/// be assigned to a real subscriber, which makes them a common sign that
+/// a placeholder slipped into real content instead of getting swapped
+/// out before publishing.
+pub fn check_placeholder_number(candidate: &str) -> Option<String> {
+    let digits: String = candidate.chars().filter(|c| c.is_ascii_digit()).collect();
+    let local = match digits.len() {
+        11 if digits.starts_with('1') => &digits[1..],
+        10 => &digits[..],
+        7 => &digits[..],
+        _ => return None,
+    };
+
+    let (exchange, subscriber) = if local.len() == 10 {
+        (&local[3..6], &local[6..10])
+    } else {
+        (&local[0..3], &local[3..7])
+    };
+
+    if exchange == "555" && subscriber.starts_with("01") {
+        Some(format!(
+            "\"{}\" is in the reserved placeholder range 555-0100 through 555-0199",
+            candidate
+        ))
+    } else {
+        None
+    }
+}
+
 type Check = fn(&str) -> Option<String>;
 
-const CHECKS: [(Check, Severity); 4] = [
+const CHECKS: [(Check, Severity); 5] = [
     (check_mixed_separators, Severity::Warning),
     (check_digit_count, Severity::Error),
     (check_balanced_parens, Severity::Error),
     (check_nanp_grouping, Severity::Warning),
+    (check_placeholder_number, Severity::Warning),
 ];
 
 /// Run every rule against one candidate, tagging results with the line
@@ -330,6 +362,27 @@ mod tests {
     fn nanp_grouping_ignores_non_nanp_lengths() {
         // 12 digits isn't a NANP number at all, grouped or not.
         assert!(check_nanp_grouping("55-512-345-6789").is_none());
+    }
+
+    #[test]
+    fn flags_placeholder_range() {
+        assert!(check_placeholder_number("555-555-0199").is_some());
+        assert!(check_placeholder_number("(212) 555-0142").is_some());
+        assert!(check_placeholder_number("+1-555-555-0100").is_some());
+        assert!(check_placeholder_number("555-0123").is_some());
+    }
+
+    #[test]
+    fn placeholder_check_ignores_real_looking_numbers() {
+        assert!(check_placeholder_number("555-123-4567").is_none());
+        assert!(check_placeholder_number("212-555-0200").is_none());
+        assert!(check_placeholder_number("212-555-1234").is_none());
+    }
+
+    #[test]
+    fn placeholder_check_ignores_numbers_with_no_nanp_shape() {
+        assert!(check_placeholder_number("+14155552671").is_none());
+        assert!(check_placeholder_number("12345").is_none());
     }
 
     #[test]
