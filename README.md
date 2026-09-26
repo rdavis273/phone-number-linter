@@ -60,6 +60,29 @@ Exit code is `0` when nothing errors, `1` when at least one error-level
 finding is reported, and `2` if a file couldn't be read at all, or the
 command line couldn't be parsed.
 
+## Config file
+
+Pass `--config path/to/file` to override the severity of individual
+rules, or turn a rule off entirely. The file is a list of `rule =
+severity` lines; blank lines and `#` comments are ignored:
+
+```
+# rules.cfg
+mixed_separators = error
+nanp_grouping = off
+```
+
+`severity` is one of `warning`, `error`, or `off`. Rule names match the
+check functions in `src/lib.rs`: `mixed_separators`, `digit_count`,
+`balanced_parens`, `nanp_grouping`, `placeholder_number`. A rule with no
+line in the config keeps its built-in default severity. An unknown rule
+name or severity value is a fatal error rather than a silently-ignored
+typo.
+
+```
+$ cargo run -- --config rules.cfg contacts.txt
+```
+
 ## Building
 
 Standard library only, no external crates:
@@ -73,8 +96,8 @@ cargo build --release
 All of the linting logic lives in `src/lib.rs` as pure functions —
 `extract_candidates`, `check_mixed_separators`, `check_digit_count`,
 `check_balanced_parens`, `check_nanp_grouping`, `check_placeholder_number`,
-`lint_line`, `lint_text`, `Finding::to_json`. None of them touch a
-file or the environment; they take a string, return data. `src/main.rs`
+`parse_config`, `lint_line`, `lint_text`, `Finding::to_json`. None of them
+touch a file or the environment; they take a string, return data. `src/main.rs`
 is the only part that does I/O (reading files, printing to stdout). That
 split is deliberate: every rule can be tested with a plain string in, a
 `Vec<Finding>` out, no fixtures or temp files needed. See the tests at

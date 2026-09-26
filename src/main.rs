@@ -3,7 +3,7 @@ use std::fs;
 use std::io::{self, Read};
 use std::process::ExitCode;
 
-use phonelint::{lint_text, Finding, Severity};
+use phonelint::{lint_text, parse_config, Finding, RuleOverrides, Severity};
 
 const STDIN_LABEL: &str = "<stdin>";
 
@@ -33,11 +33,12 @@ fn parse_format(value: &str) -> Result<Format, String> {
     }
 }
 
-/// Split CLI args into file paths and an output format, accepting both
-/// `--format json` and `--format=json`.
-fn parse_args(args: Vec<String>) -> Result<(Vec<String>, Format), String> {
+/// Split CLI args into file paths, an output format, and an optional
+/// config file path, accepting both `--flag value` and `--flag=value`.
+fn parse_args(args: Vec<String>) -> Result<(Vec<String>, Format, Option<String>), String> {
     let mut paths = Vec::new();
     let mut format = Format::Text;
+    let mut config_path = None;
     let mut iter = args.into_iter();
     while let Some(arg) = iter.next() {
         if arg == "--format" {
@@ -47,6 +48,13 @@ fn parse_args(args: Vec<String>) -> Result<(Vec<String>, Format), String> {
             format = parse_format(&value)?;
         } else if let Some(value) = arg.strip_prefix("--format=") {
             format = parse_format(value)?;
+        } else if arg == "--config" {
+            let value = iter
+                .next()
+                .ok_or_else(|| "--config requires a path argument".to_string())?;
+            config_path = Some(value);
+        } else if let Some(value) = arg.strip_prefix("--config=") {
+            config_path = Some(value.to_string());
         } else {
             paths.push(arg);
         }
@@ -54,7 +62,20 @@ fn parse_args(args: Vec<String>) -> Result<(Vec<String>, Format), String> {
     if paths.is_empty() {
         paths.push("-".to_string());
     }
-    Ok((paths, format))
+    Ok((paths, format, config_path))
+}
+
+/// Load and parse the rule overrides from a `--config` path, if one was
+/// given. Any read or parse failure is fatal, since a config the user
+/// asked for that silently doesn't apply would be worse than an error.
+fn load_overrides(config_path: Option<&str>) -> Result<RuleOverrides, String> {
+    match config_path {
+        None => Ok(RuleOverrides::new()),
+        Some(path) => {
+            let text = fs::read_to_string(path).map_err(|err| format!("{}: {}", path, err))?;
+            parse_config(&text).map_err(|err| format!("{}: {}", path, err))
+        }
+    }
 }
 
 fn print_text(label: &str, findings: &[Finding]) {
@@ -71,8 +92,16 @@ fn print_text(label: &str, findings: &[Finding]) {
 }
 
 fn main() -> ExitCode {
-    let (paths, format) = match parse_args(env::args().skip(1).collect()) {
+    let (paths, format, config_path) = match parse_args(env::args().skip(1).collect()) {
         Ok(parsed) => parsed,
+        Err(err) => {
+            eprintln!("{}", err);
+            return ExitCode::from(2);
+        }
+    };
+
+    let overrides = match load_overrides(config_path.as_deref()) {
+        Ok(overrides) => overrides,
         Err(err) => {
             eprintln!("{}", err);
             return ExitCode::from(2);
@@ -94,7 +123,7 @@ fn main() -> ExitCode {
         };
 
         let label = if path == "-" { STDIN_LABEL } else { path };
-        let findings = lint_text(&text);
+        let findings = lint_text(&text, &overrides);
 
         if findings.iter().any(|f| f.severity == Severity::Error) {
             had_error = true;

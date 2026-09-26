@@ -6,6 +6,8 @@
 //! does I/O. Keeping the split this strict means every rule below can be
 //! unit tested with a plain string in, a `Vec<Finding>` out.
 
+use std::collections::HashMap;
+
 /// A local number needs at least this many digits to be worth flagging.
 /// Below this, a digit run is more likely a date, a price, or a version
 /// number than a phone number.
@@ -218,24 +220,95 @@ pub fn check_placeholder_number(candidate: &str) -> Option<String> {
 
 type Check = fn(&str) -> Option<String>;
 
-const CHECKS: [(Check, Severity); 5] = [
-    (check_mixed_separators, Severity::Warning),
-    (check_digit_count, Severity::Error),
-    (check_balanced_parens, Severity::Error),
-    (check_nanp_grouping, Severity::Warning),
-    (check_placeholder_number, Severity::Warning),
+const CHECKS: [(&str, Check, Severity); 5] = [
+    ("mixed_separators", check_mixed_separators, Severity::Warning),
+    ("digit_count", check_digit_count, Severity::Error),
+    ("balanced_parens", check_balanced_parens, Severity::Error),
+    ("nanp_grouping", check_nanp_grouping, Severity::Warning),
+    ("placeholder_number", check_placeholder_number, Severity::Warning),
 ];
 
+/// A per-rule severity override loaded from a config file. `Off`
+/// disables the rule outright, rather than just changing how loud it
+/// reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeverityOverride {
+    Warning,
+    Error,
+    Off,
+}
+
+/// Rule name (matching one of the names in [`CHECKS`], e.g.
+/// "mixed_separators") to the severity a config file wants it reported
+/// at. A rule with no entry keeps its built-in default severity.
+pub type RuleOverrides = HashMap<String, SeverityOverride>;
+
+/// Parse a config file of `rule = severity` lines, one override per
+/// line. Blank lines and anything from `#` to the end of a line are
+/// ignored. `severity` is one of "warning", "error", or "off". Unknown
+/// rule names and unknown severities are reported as errors with a line
+/// number, since a silently-ignored typo would leave a rule running at
+/// a severity nobody asked for.
+pub fn parse_config(text: &str) -> Result<RuleOverrides, String> {
+    let mut overrides = RuleOverrides::new();
+    for (i, raw_line) in text.lines().enumerate() {
+        let line_number = i + 1;
+        let line = raw_line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let (name, severity) = line.split_once('=').ok_or_else(|| {
+            format!(
+                "line {}: expected \"rule = severity\", got \"{}\"",
+                line_number, raw_line
+            )
+        })?;
+        let name = name.trim();
+        let severity = severity.trim();
+
+        if !CHECKS.iter().any(|(rule_name, _, _)| *rule_name == name) {
+            let known: Vec<&str> = CHECKS.iter().map(|(rule_name, _, _)| *rule_name).collect();
+            return Err(format!(
+                "line {}: unknown rule \"{}\", expected one of {:?}",
+                line_number, name, known
+            ));
+        }
+
+        let severity = match severity {
+            "warning" => SeverityOverride::Warning,
+            "error" => SeverityOverride::Error,
+            "off" => SeverityOverride::Off,
+            other => {
+                return Err(format!(
+                    "line {}: unknown severity \"{}\", expected warning, error, or off",
+                    line_number, other
+                ))
+            }
+        };
+
+        overrides.insert(name.to_string(), severity);
+    }
+    Ok(overrides)
+}
+
 /// Run every rule against one candidate, tagging results with the line
-/// they came from.
-pub fn lint_candidate(line: usize, candidate: &Candidate) -> Vec<Finding> {
+/// they came from. `overrides` is applied by rule name; a rule set to
+/// `Off` is skipped entirely rather than downgraded.
+pub fn lint_candidate(line: usize, candidate: &Candidate, overrides: &RuleOverrides) -> Vec<Finding> {
     CHECKS
         .iter()
-        .filter_map(|(check, severity)| {
+        .filter_map(|(name, check, default_severity)| {
+            let severity = match overrides.get(*name) {
+                Some(SeverityOverride::Off) => return None,
+                Some(SeverityOverride::Warning) => Severity::Warning,
+                Some(SeverityOverride::Error) => Severity::Error,
+                None => *default_severity,
+            };
             check(&candidate.text).map(|message| Finding {
                 line,
                 column: candidate.column,
-                severity: *severity,
+                severity,
                 message,
             })
         })
@@ -243,19 +316,19 @@ pub fn lint_candidate(line: usize, candidate: &Candidate) -> Vec<Finding> {
 }
 
 /// Extract and lint every candidate on one line.
-pub fn lint_line(line_number: usize, line: &str) -> Vec<Finding> {
+pub fn lint_line(line_number: usize, line: &str, overrides: &RuleOverrides) -> Vec<Finding> {
     extract_candidates(line)
         .iter()
-        .flat_map(|c| lint_candidate(line_number, c))
+        .flat_map(|c| lint_candidate(line_number, c, overrides))
         .collect()
 }
 
 /// Lint a whole file's worth of text, one line at a time. Line numbers
 /// in the results are 1-based.
-pub fn lint_text(text: &str) -> Vec<Finding> {
+pub fn lint_text(text: &str, overrides: &RuleOverrides) -> Vec<Finding> {
     text.lines()
         .enumerate()
-        .flat_map(|(i, line)| lint_line(i + 1, line))
+        .flat_map(|(i, line)| lint_line(i + 1, line, overrides))
         .collect()
 }
 
@@ -403,9 +476,75 @@ mod tests {
     #[test]
     fn lint_text_reports_correct_line_numbers() {
         let text = "no numbers here\ncall (555 123-4567 now\nfine: 555-123-4567";
-        let findings = lint_text(text);
+        let findings = lint_text(text, &RuleOverrides::new());
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].line, 2);
         assert_eq!(findings[0].severity, Severity::Error);
+    }
+
+    #[test]
+    fn parse_config_reads_valid_overrides() {
+        let config = "mixed_separators = error\n# a comment line\n\nnanp_grouping = off\n";
+        let overrides = parse_config(config).unwrap();
+        assert_eq!(
+            overrides.get("mixed_separators"),
+            Some(&SeverityOverride::Error)
+        );
+        assert_eq!(overrides.get("nanp_grouping"), Some(&SeverityOverride::Off));
+        assert_eq!(overrides.len(), 2);
+    }
+
+    #[test]
+    fn parse_config_ignores_inline_comments_and_blank_lines() {
+        let config = "\n  \nplaceholder_number = warning # keep this one loud\n";
+        let overrides = parse_config(config).unwrap();
+        assert_eq!(
+            overrides.get("placeholder_number"),
+            Some(&SeverityOverride::Warning)
+        );
+    }
+
+    #[test]
+    fn parse_config_rejects_unknown_rule() {
+        let err = parse_config("not_a_real_rule = error").unwrap_err();
+        assert!(err.contains("unknown rule"));
+        assert!(err.contains("not_a_real_rule"));
+    }
+
+    #[test]
+    fn parse_config_rejects_unknown_severity() {
+        let err = parse_config("digit_count = catastrophic").unwrap_err();
+        assert!(err.contains("unknown severity"));
+    }
+
+    #[test]
+    fn parse_config_rejects_malformed_line() {
+        let err = parse_config("digit_count error").unwrap_err();
+        assert!(err.contains("line 1"));
+    }
+
+    #[test]
+    fn override_changes_reported_severity() {
+        let candidate = Candidate {
+            column: 1,
+            text: "555-123.4567".to_string(),
+        };
+        let mut overrides = RuleOverrides::new();
+        overrides.insert("mixed_separators".to_string(), SeverityOverride::Error);
+        let findings = lint_candidate(1, &candidate, &overrides);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, Severity::Error);
+    }
+
+    #[test]
+    fn override_off_suppresses_the_rule() {
+        let candidate = Candidate {
+            column: 1,
+            text: "(555 123-4567".to_string(),
+        };
+        let mut overrides = RuleOverrides::new();
+        overrides.insert("balanced_parens".to_string(), SeverityOverride::Off);
+        let findings = lint_candidate(1, &candidate, &overrides);
+        assert!(findings.is_empty());
     }
 }
