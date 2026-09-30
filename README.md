@@ -83,6 +83,12 @@ typo.
 $ cargo run -- --config rules.cfg contacts.txt
 ```
 
+Without `--config`, the linter looks for a file named `.phonelintrc` in
+the current directory and then each parent directory, and uses the first
+one it finds (files are not merged). It has the same format as above.
+Pass `--no-config` to skip that lookup; combining it with `--config` is a
+usage error.
+
 ## Building
 
 Standard library only, no external crates:

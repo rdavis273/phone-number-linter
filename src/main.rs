@@ -1,11 +1,13 @@
 use std::env;
 use std::fs;
 use std::io::{self, Read};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use phonelint::{lint_text, parse_config, Finding, RuleOverrides, Severity};
 
 const STDIN_LABEL: &str = "<stdin>";
+const DEFAULT_CONFIG_NAME: &str = ".phonelintrc";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Format {
@@ -33,12 +35,20 @@ fn parse_format(value: &str) -> Result<Format, String> {
     }
 }
 
-/// Split CLI args into file paths, an output format, and an optional
-/// config file path, accepting both `--flag value` and `--flag=value`.
-fn parse_args(args: Vec<String>) -> Result<(Vec<String>, Format, Option<String>), String> {
+struct Args {
+    paths: Vec<String>,
+    format: Format,
+    config_path: Option<String>,
+    no_config: bool,
+}
+
+/// Split CLI args into file paths, an output format, and config options,
+/// accepting both `--flag value` and `--flag=value`.
+fn parse_args(args: Vec<String>) -> Result<Args, String> {
     let mut paths = Vec::new();
     let mut format = Format::Text;
     let mut config_path = None;
+    let mut no_config = false;
     let mut iter = args.into_iter();
     while let Some(arg) = iter.next() {
         if arg == "--format" {
@@ -55,27 +65,52 @@ fn parse_args(args: Vec<String>) -> Result<(Vec<String>, Format, Option<String>)
             config_path = Some(value);
         } else if let Some(value) = arg.strip_prefix("--config=") {
             config_path = Some(value.to_string());
+        } else if arg == "--no-config" {
+            no_config = true;
         } else {
             paths.push(arg);
         }
     }
+    if config_path.is_some() && no_config {
+        return Err("--config and --no-config cannot be used together".to_string());
+    }
     if paths.is_empty() {
         paths.push("-".to_string());
     }
-    Ok((paths, format, config_path))
+    Ok(Args {
+        paths,
+        format,
+        config_path,
+        no_config,
+    })
 }
 
-/// Load and parse the rule overrides from a `--config` path, if one was
-/// given. Any read or parse failure is fatal, since a config the user
-/// asked for that silently doesn't apply would be worse than an error.
-fn load_overrides(config_path: Option<&str>) -> Result<RuleOverrides, String> {
-    match config_path {
-        None => Ok(RuleOverrides::new()),
-        Some(path) => {
-            let text = fs::read_to_string(path).map_err(|err| format!("{}: {}", path, err))?;
-            parse_config(&text).map_err(|err| format!("{}: {}", path, err))
-        }
-    }
+/// Look for a `.phonelintrc` in the current directory, then each parent,
+/// so the linter behaves the same when run from a subdirectory of a
+/// project. The nearest file wins; configs are not merged.
+fn find_default_config() -> Option<PathBuf> {
+    let cwd = env::current_dir().ok()?;
+    cwd.ancestors()
+        .map(|dir| dir.join(DEFAULT_CONFIG_NAME))
+        .find(|candidate| candidate.is_file())
+}
+
+/// Load and parse the rule overrides from an explicit `--config` path, or
+/// failing that a discovered `.phonelintrc`. Any read or parse failure is
+/// fatal, since a config that silently doesn't apply would be worse than
+/// an error.
+fn load_overrides(config_path: Option<&str>, no_config: bool) -> Result<RuleOverrides, String> {
+    let path = match config_path {
+        Some(path) => PathBuf::from(path),
+        None if no_config => return Ok(RuleOverrides::new()),
+        None => match find_default_config() {
+            Some(path) => path,
+            None => return Ok(RuleOverrides::new()),
+        },
+    };
+    let shown = path.display();
+    let text = fs::read_to_string(&path).map_err(|err| format!("{}: {}", shown, err))?;
+    parse_config(&text).map_err(|err| format!("{}: {}", shown, err))
 }
 
 fn print_text(label: &str, findings: &[Finding]) {
@@ -92,7 +127,12 @@ fn print_text(label: &str, findings: &[Finding]) {
 }
 
 fn main() -> ExitCode {
-    let (paths, format, config_path) = match parse_args(env::args().skip(1).collect()) {
+    let Args {
+        paths,
+        format,
+        config_path,
+        no_config,
+    } = match parse_args(env::args().skip(1).collect()) {
         Ok(parsed) => parsed,
         Err(err) => {
             eprintln!("{}", err);
@@ -100,7 +140,7 @@ fn main() -> ExitCode {
         }
     };
 
-    let overrides = match load_overrides(config_path.as_deref()) {
+    let overrides = match load_overrides(config_path.as_deref(), no_config) {
         Ok(overrides) => overrides,
         Err(err) => {
             eprintln!("{}", err);
